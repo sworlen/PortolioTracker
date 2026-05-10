@@ -1,23 +1,28 @@
 # PortolioTracker
 
-FastAPI-based investor platform foundation with seven major capability areas implemented as starter modules.
+FastAPI-based investor platform foundation with advanced analytics, scoring, risk, and valuation modules.
 
-## Implemented (7 parts)
+## Implemented capabilities
 
-1. **Auth + Multi-portfolio model** (`/api/users`, `/api/portfolios`)
-2. **Refresh job bootstrap** (`/api/jobs/refresh`)
-3. **Quarterly analyzer v2** (`/api/stocks/{ticker}/quarterly-analyzer`)
-4. **News impact endpoint** (`/api/stocks/{ticker}/news-impact`)
-5. **Screener v2 + saved screens** (`/api/screener`, `/api/screens/save`)
-6. **Portfolio risk module starter** (`/api/portfolio/risk`)
-7. **Simple backtest module starter** (`/api/backtest/simple`)
+- User + portfolio data model
+- Persistent positions + transaction logging
+- Quote refresh job endpoint
+- Multi-factor stock scoring
+- Quarterly analyzer (good/mid/bad)
+- News impact estimator
+- Screener + saved screens
+- Portfolio concentration risk endpoint
+- Simple backtest endpoint
+- **DCF valuation endpoint**
+- **Risk metrics endpoint** (Sharpe, Sortino, vol, drawdown)
+- **Monte Carlo simulation endpoint**
 
-## Also included
+## Key API examples
 
-- SQLite persistence with SQLAlchemy
-- Position add/update with transaction logging
-- Portfolio summary endpoint
-- Stock scoring endpoint
+- `GET /api/stocks/AAPL/valuation/dcf`
+- `GET /api/stocks/AAPL/risk-metrics`
+- `GET /api/stocks/AAPL/monte-carlo?days=252&sims=500`
+- `GET /api/backtest/simple?tickers=AAPL,MSFT&start=2024-01-01&end=2025-01-01`
 
 ## Run locally
 

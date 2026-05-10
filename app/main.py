@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from statistics import mean
+
+from app.analytics import compute_return_stats, composite_score, dcf_intrinsic_value, monte_carlo_paths
 from typing import Dict, List
 
+import numpy as np
 import yfinance as yf
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -172,7 +175,7 @@ def _compute_stock_score(ticker: str) -> StockScore:
         momentum = max(0.0, min(100.0, 50 + ret_6m))
     penalties = min(30, (debt_to_equity or 100) / 10) + max(0, ((beta or 1) - 1) * 15)
     risk = max(0.0, min(100.0, 80 - penalties))
-    total = quality * 0.25 + growth * 0.20 + valuation * 0.20 + momentum * 0.15 + risk * 0.20
+    total = composite_score(quality, growth, valuation, momentum, risk)
     return StockScore(ticker=ticker.upper(), total=round(total, 2), quality=round(quality, 2), growth=round(growth, 2), valuation=round(valuation, 2), momentum=round(momentum, 2), risk=round(risk, 2))
 
 
@@ -300,6 +303,51 @@ def simple_backtest(tickers: str, start: str, end: str):
         rets.append({"ticker": t, "return_pct": round(float(ret), 2)})
     avg = round(mean([r["return_pct"] for r in rets]), 2) if rets else 0.0
     return {"period": {"start": start, "end": end}, "count": len(rets), "average_return_pct": avg, "results": rets}
+
+
+@app.get("/api/stocks/{ticker}/valuation/dcf")
+def dcf_valuation(ticker: str):
+    tk = yf.Ticker(ticker.upper())
+    info = tk.info or {}
+    fcf = float(info.get("freeCashflow") or 0)
+    net_debt = float((info.get("totalDebt") or 0) - (info.get("totalCash") or 0))
+    shares = float(info.get("sharesOutstanding") or 1)
+    value = dcf_intrinsic_value(fcf0=fcf, net_debt=net_debt, shares_outstanding=shares)
+    price = _quote(ticker.upper())
+    upside = ((value / price) - 1) * 100 if price else 0
+    return {"ticker": ticker.upper(), "dcf_value_per_share": round(value, 2), "last_price": round(price, 2), "upside_pct": round(upside, 2)}
+
+
+@app.get("/api/stocks/{ticker}/risk-metrics")
+def risk_metrics(ticker: str):
+    hist = yf.Ticker(ticker.upper()).history(period="2y")
+    if hist.empty:
+        raise HTTPException(status_code=404, detail="No history")
+    stats = compute_return_stats(hist["Close"].tolist())
+    return {"ticker": ticker.upper(), **stats.__dict__}
+
+
+@app.get("/api/stocks/{ticker}/monte-carlo")
+def monte_carlo(ticker: str, days: int = 252, sims: int = 500):
+    hist = yf.Ticker(ticker.upper()).history(period="2y")
+    if hist.empty:
+        raise HTTPException(status_code=404, detail="No history")
+    closes = hist["Close"].tolist()
+    stats = compute_return_stats(closes)
+    mu = stats.annual_return
+    sigma = stats.annual_volatility
+    start = closes[-1]
+    paths = monte_carlo_paths(start_price=start, mu=mu, sigma=sigma, days=days, n_sims=sims)
+    final = paths[:, -1]
+    return {
+        "ticker": ticker.upper(),
+        "start_price": round(start, 2),
+        "days": days,
+        "simulations": sims,
+        "p5": round(float(np.percentile(final, 5)), 2),
+        "p50": round(float(np.percentile(final, 50)), 2),
+        "p95": round(float(np.percentile(final, 95)), 2),
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
