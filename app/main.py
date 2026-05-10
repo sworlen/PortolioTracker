@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
+import time
+import logging
 from statistics import mean
 
 from app.analytics import compute_return_stats, composite_score, dcf_intrinsic_value, monte_carlo_paths
@@ -8,17 +11,23 @@ from typing import Dict, List
 
 import numpy as np
 import yfinance as yf
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Header
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, create_engine, func, select
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, create_engine, func, select, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
+from app.security import create_access_token, decode_token, hash_password, verify_password
 
 app = FastAPI(title="Portfolio Tracker")
 templates = Jinja2Templates(directory="app/templates")
-engine = create_engine("sqlite:///portfolio.db", future=True)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///portfolio.db")
+engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+logger = logging.getLogger("portfolio_tracker")
+logging.basicConfig(level=logging.INFO)
+RATE_LIMIT: dict[str, list[float]] = {}
+CACHE: dict[str, tuple[float, object]] = {}
 
 
 class Base(DeclarativeBase):
@@ -29,6 +38,9 @@ class UserRow(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(256), default="")
+    password_salt: Mapped[str] = mapped_column(String(64), default="")
+    role: Mapped[str] = mapped_column(String(20), default="user")
     portfolios: Mapped[List["PortfolioRow"]] = relationship(back_populates="user")
 
 
@@ -72,11 +84,77 @@ class SavedScreenRow(Base):
     min_score: Mapped[float] = mapped_column(Float, default=60.0)
 
 
+
+
+class ThesisRow(Base):
+    __tablename__ = "theses"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    ticker: Mapped[str] = mapped_column(String(12), index=True)
+    thesis: Mapped[str] = mapped_column(String(3000))
+    must_happen: Mapped[str] = mapped_column(String(3000), default="")
+    invalidation: Mapped[str] = mapped_column(String(3000), default="")
+    status: Mapped[str] = mapped_column(String(16), default="active")
+
+
+class AlertRuleRow(Base):
+    __tablename__ = "alert_rules"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    ticker: Mapped[str] = mapped_column(String(12), index=True)
+    min_score: Mapped[float] = mapped_column(Float, default=0)
+    max_score: Mapped[float] = mapped_column(Float, default=100)
+    note: Mapped[str] = mapped_column(String(500), default="")
+
+
+class WatchlistRow(Base):
+    __tablename__ = "watchlist"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    ticker: Mapped[str] = mapped_column(String(12), index=True)
+    stage: Mapped[str] = mapped_column(String(20), default="idea")
+
+
+
+class PriceSnapshotRow(Base):
+    __tablename__ = "price_snapshots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(12), index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    close: Mapped[float] = mapped_column(Float)
+
+
+class NewsSnapshotRow(Base):
+    __tablename__ = "news_snapshots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(12), index=True)
+    published_at: Mapped[str] = mapped_column(String(64), default="")
+    title: Mapped[str] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(200), default="")
+
+
+class EarningsEventRow(Base):
+    __tablename__ = "earnings_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(12), index=True)
+    event_date: Mapped[str] = mapped_column(String(32), index=True)
+    event_type: Mapped[str] = mapped_column(String(50), default="earnings")
+
+
+class PortfolioNAVRow(Base):
+    __tablename__ = "portfolio_nav"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    nav: Mapped[float] = mapped_column(Float)
+
 Base.metadata.create_all(engine)
 
 
 class UserCreate(BaseModel):
     email: str
+    password: str
 
 
 class PortfolioCreate(BaseModel):
@@ -117,6 +195,24 @@ class StockScore(BaseModel):
     risk: float
 
 
+def _rate_limit(key: str, max_req: int = 60, window_sec: int = 60):
+    now = time.time()
+    arr = [t for t in RATE_LIMIT.get(key, []) if now - t < window_sec]
+    if len(arr) >= max_req:
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+    arr.append(now)
+    RATE_LIMIT[key] = arr
+
+
+def _cached(key: str, ttl: int, fn):
+    now = time.time()
+    if key in CACHE and now - CACHE[key][0] < ttl:
+        return CACHE[key][1]
+    value = fn()
+    CACHE[key] = (now, value)
+    return value
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -126,7 +222,8 @@ def get_db():
 
 
 def _quote(ticker: str) -> float:
-    hist = yf.Ticker(ticker).history(period="1d")
+    _rate_limit(f"quote:{ticker}", max_req=120, window_sec=60)
+    hist = _cached(f"quote:{ticker}", ttl=30, fn=lambda: yf.Ticker(ticker).history(period="1d"))
     if hist.empty:
         raise HTTPException(status_code=404, detail=f"No price found for {ticker}")
     return float(hist["Close"].iloc[-1])
@@ -182,14 +279,35 @@ def _compute_stock_score(ticker: str) -> StockScore:
 # 1) Auth + Multi-portfolio data model
 @app.post("/api/users")
 def create_user(payload: UserCreate, db: Session = Depends(get_db)):
-    user = UserRow(email=payload.email)
+    ph, ps = hash_password(payload.password)
+    user = UserRow(email=payload.email, password_hash=ph, password_salt=ps)
     db.add(user)
     db.commit()
     db.refresh(user)
     default_portfolio = PortfolioRow(user_id=user.id, name="Main")
     db.add(default_portfolio)
     db.commit()
-    return {"user_id": user.id, "email": user.email, "default_portfolio_id": default_portfolio.id}
+    token = create_access_token(str(user.id))
+    return {"user_id": user.id, "email": user.email, "default_portfolio_id": default_portfolio.id, "access_token": token}
+
+
+@app.post("/api/login")
+def login(email: str, password: str, db: Session = Depends(get_db)):
+    user = db.scalar(select(UserRow).where(UserRow.email == email))
+    if not user or not verify_password(password, user.password_hash, user.password_salt):
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    return {"access_token": create_access_token(str(user.id))}
+
+
+def _require_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> UserRow:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    token = authorization.split(" ", 1)[1]
+    payload = decode_token(token)
+    user = db.get(UserRow, int(payload["sub"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="invalid token")
+    return user
 
 
 @app.post("/api/portfolios")
@@ -350,10 +468,114 @@ def monte_carlo(ticker: str, days: int = 252, sims: int = 500):
     }
 
 
+
+
+@app.post("/api/thesis")
+def save_thesis(portfolio_id: int, ticker: str, thesis: str, must_happen: str = "", invalidation: str = "", db: Session = Depends(get_db)):
+    row = db.scalar(select(ThesisRow).where(ThesisRow.portfolio_id == portfolio_id, ThesisRow.ticker == ticker.upper()))
+    if row:
+        row.thesis = thesis
+        row.must_happen = must_happen
+        row.invalidation = invalidation
+    else:
+        db.add(ThesisRow(portfolio_id=portfolio_id, ticker=ticker.upper(), thesis=thesis, must_happen=must_happen, invalidation=invalidation))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/stocks/{ticker}/quarterly-translator")
+def quarterly_translator(ticker: str):
+    qa = quarterly_analyzer(ticker)
+    why = []
+    why.append("Revenue trend improved versus prior periods." if qa["growth_pct"] > 0 else "Revenue trend weakened versus prior periods.")
+    why.append("EPS trend improved, supporting profitability outlook." if qa["eps_growth_pct"] > 0 else "EPS trend deteriorated and needs attention.")
+    return {
+        "ticker": ticker.upper(),
+        "label": qa["verdict"],
+        "score": qa["score"],
+        "summary": f"Quarter verdict is {qa['verdict'].upper()} based on trend signals.",
+        "what_went_good": [w for w in why if "improved" in w],
+        "what_went_bad": [w for w in why if "weakened" in w or "deteriorated" in w],
+        "what_to_watch_next": ["Next quarter guidance", "Margin trend", "Cashflow conversion"],
+    }
+
+
+@app.post("/api/watchlist")
+def upsert_watchlist(portfolio_id: int, ticker: str, stage: str = "idea", db: Session = Depends(get_db)):
+    row = db.scalar(select(WatchlistRow).where(WatchlistRow.portfolio_id == portfolio_id, WatchlistRow.ticker == ticker.upper()))
+    if row:
+        row.stage = stage
+    else:
+        db.add(WatchlistRow(portfolio_id=portfolio_id, ticker=ticker.upper(), stage=stage))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/watchlist")
+def get_watchlist(portfolio_id: int, db: Session = Depends(get_db)):
+    rows = db.scalars(select(WatchlistRow).where(WatchlistRow.portfolio_id == portfolio_id)).all()
+    return [{"ticker": r.ticker, "stage": r.stage} for r in rows]
+
+
+@app.post("/api/alerts")
+def create_alert(portfolio_id: int, ticker: str, min_score: float = 0, max_score: float = 100, note: str = "", db: Session = Depends(get_db)):
+    db.add(AlertRuleRow(portfolio_id=portfolio_id, ticker=ticker.upper(), min_score=min_score, max_score=max_score, note=note))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/alerts/check")
+def check_alerts(portfolio_id: int, db: Session = Depends(get_db)):
+    rules = db.scalars(select(AlertRuleRow).where(AlertRuleRow.portfolio_id == portfolio_id)).all()
+    triggered = []
+    for r in rules:
+        score = _compute_stock_score(r.ticker).total
+        if score < r.min_score or score > r.max_score:
+            triggered.append({"ticker": r.ticker, "score": score, "note": r.note})
+    return {"portfolio_id": portfolio_id, "triggered": triggered, "count": len(triggered)}
+
+
+@app.get("/api/portfolio/daily-brief")
+def daily_brief(portfolio_id: int, db: Session = Depends(get_db)):
+    positions = db.scalars(select(PositionRow).where(PositionRow.portfolio_id == portfolio_id)).all()
+    cards = []
+    for row in positions[:10]:
+        score = _compute_stock_score(row.ticker)
+        news = (yf.Ticker(row.ticker).news or [])[:1]
+        cards.append({
+            "ticker": row.ticker,
+            "score": score.total,
+            "signal": "strong" if score.total >= 75 else "watch" if score.total >= 60 else "risk",
+            "headline": (news[0].get("content", {}).get("title") if news else None),
+        })
+    return {"date": datetime.utcnow().strftime("%Y-%m-%d"), "portfolio_id": portfolio_id, "cards": cards}
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     return templates.TemplateResponse(request, "index.html", {"updated": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"), "positions": [], "scores": [], "total_value": 0, "total_pnl": 0})
 
+
+
+
+@app.get("/api/ops/metrics")
+def ops_metrics(db: Session = Depends(get_db)):
+    return {
+        "users": len(db.scalars(select(UserRow)).all()),
+        "portfolios": len(db.scalars(select(PortfolioRow)).all()),
+        "positions": len(db.scalars(select(PositionRow)).all()),
+        "cache_keys": len(CACHE),
+        "rate_limit_keys": len(RATE_LIMIT),
+    }
+
+
+@app.post("/api/jobs/snapshot-prices")
+def snapshot_prices(tickers: str, db: Session = Depends(get_db), user: UserRow = Depends(_require_user)):
+    for t in [x.strip().upper() for x in tickers.split(",") if x.strip()]:
+        px = _quote(t)
+        db.add(PriceSnapshotRow(ticker=t, close=px))
+    db.commit()
+    return {"ok": True}
 
 @app.get("/health")
 def health():

@@ -6,3 +6,4 @@ yfinance==0.2.58
 pandas==2.2.3
 numpy==2.2.5
 sqlalchemy==2.0.41
+PyJWT==2.10.1
