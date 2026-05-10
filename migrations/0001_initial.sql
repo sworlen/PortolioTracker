@@ -1,0 +1,2 @@
+-- Placeholder migration script for Wave 1 foundation.
+-- Use Alembic in production to generate/upgrade schema revisions.
