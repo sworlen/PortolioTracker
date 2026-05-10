@@ -5,15 +5,15 @@
   <title>Portfolio Tracker</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 2rem; }
-    table { border-collapse: collapse; width: 100%; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; }
     th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
     th { background: #f5f5f5; }
-    .row { display: flex; gap: 1rem; }
+    .row { display: flex; gap: 1rem; flex-wrap: wrap; }
     .card { padding: 1rem; border: 1px solid #ddd; border-radius: 8px; min-width: 220px; }
   </style>
 </head>
 <body>
-  <h1>Portfolio Tracker (MVP)</h1>
+  <h1>Portfolio Tracker (Advanced MVP)</h1>
   <p>Updated: {{ updated }}</p>
 
   <div class="row">
@@ -45,6 +45,28 @@
         <td>{{ "{:.2f}".format(p.last_price) }}</td>
         <td>{{ "{:.2f}".format(p.market_value) }}</td>
         <td>{{ "{:.2f}".format(p.pnl) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Stock Scores</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Ticker</th><th>Total</th><th>Quality</th><th>Growth</th><th>Valuation</th><th>Momentum</th><th>Risk</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in scores %}
+      <tr>
+        <td>{{ s.ticker }}</td>
+        <td>{{ s.total }}</td>
+        <td>{{ s.quality }}</td>
+        <td>{{ s.growth }}</td>
+        <td>{{ s.valuation }}</td>
+        <td>{{ s.momentum }}</td>
+        <td>{{ s.risk }}</td>
       </tr>
       {% endfor %}
     </tbody>
