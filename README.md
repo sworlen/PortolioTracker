@@ -1,28 +1,23 @@
 # PortolioTracker
 
-A growing Python web app for a personal portfolio tracker using FastAPI + yfinance.
+FastAPI-based investor platform foundation with seven major capability areas implemented as starter modules.
 
-## Current capabilities
+## Implemented (7 parts)
 
-- Add/update stock positions (ticker, shares, average cost)
-- Persistent position storage with SQLite + SQLAlchemy
-- Live quote pull with yfinance
-- Portfolio dashboard with total value and P&L
-- Portfolio summary API
-- Multi-factor stock scoring (quality, growth, valuation, momentum, risk)
-- Quarterly analyzer with `good/mid/bad` verdict and explainable component scores
-- Ticker news endpoint for downstream impact-analysis work
-- Basic screener endpoint with score threshold filtering
+1. **Auth + Multi-portfolio model** (`/api/users`, `/api/portfolios`)
+2. **Refresh job bootstrap** (`/api/jobs/refresh`)
+3. **Quarterly analyzer v2** (`/api/stocks/{ticker}/quarterly-analyzer`)
+4. **News impact endpoint** (`/api/stocks/{ticker}/news-impact`)
+5. **Screener v2 + saved screens** (`/api/screener`, `/api/screens/save`)
+6. **Portfolio risk module starter** (`/api/portfolio/risk`)
+7. **Simple backtest module starter** (`/api/backtest/simple`)
 
-## API Endpoints
+## Also included
 
-- `GET /api/positions`
-- `GET /api/portfolio/summary`
-- `GET /api/stocks/{ticker}/quarterly`
-- `GET /api/stocks/{ticker}/score`
-- `GET /api/stocks/{ticker}/quarterly-analyzer`
-- `GET /api/stocks/{ticker}/news`
-- `GET /api/screener?tickers=AAPL,MSFT,NVDA&min_score=65`
+- SQLite persistence with SQLAlchemy
+- Position add/update with transaction logging
+- Portfolio summary endpoint
+- Stock scoring endpoint
 
 ## Run locally
 
@@ -33,11 +28,4 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Open: `http://127.0.0.1:8000`
-
-## Next high-complexity milestones
-
-- Background schedulers for quote/news refresh
-- Portfolio-level risk decomposition and stress tests
-- Natural-language portfolio copilot
-- Custom factor backtesting and strategy lab
+Open `http://127.0.0.1:8000/docs` for API docs.
