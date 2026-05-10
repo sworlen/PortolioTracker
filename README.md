@@ -1,28 +1,15 @@
 # PortolioTracker
 
-FastAPI-based investor platform foundation with advanced analytics, scoring, risk, and valuation modules.
+Advanced FastAPI investor platform with portfolio management, scoring, risk, valuation, alerts, thesis tracking, and research workflow tools.
 
-## Implemented capabilities
+## Added advanced modules
 
-- User + portfolio data model
-- Persistent positions + transaction logging
-- Quote refresh job endpoint
-- Multi-factor stock scoring
-- Quarterly analyzer (good/mid/bad)
-- News impact estimator
-- Screener + saved screens
-- Portfolio concentration risk endpoint
-- Simple backtest endpoint
-- **DCF valuation endpoint**
-- **Risk metrics endpoint** (Sharpe, Sortino, vol, drawdown)
-- **Monte Carlo simulation endpoint**
-
-## Key API examples
-
-- `GET /api/stocks/AAPL/valuation/dcf`
-- `GET /api/stocks/AAPL/risk-metrics`
-- `GET /api/stocks/AAPL/monte-carlo?days=252&sims=500`
-- `GET /api/backtest/simple?tickers=AAPL,MSFT&start=2024-01-01&end=2025-01-01`
+- Thesis tracking (`/api/thesis`)
+- Quarterly translator (`/api/stocks/{ticker}/quarterly-translator`)
+- Watchlist funnel stages (`/api/watchlist`)
+- Score-based alert rules (`/api/alerts`, `/api/alerts/check`)
+- Portfolio daily brief (`/api/portfolio/daily-brief`)
+- DCF valuation, risk metrics, Monte Carlo, backtest, screener, risk concentration, and news impact endpoints
 
 ## Run locally
 

@@ -72,6 +72,36 @@ class SavedScreenRow(Base):
     min_score: Mapped[float] = mapped_column(Float, default=60.0)
 
 
+
+
+class ThesisRow(Base):
+    __tablename__ = "theses"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    ticker: Mapped[str] = mapped_column(String(12), index=True)
+    thesis: Mapped[str] = mapped_column(String(3000))
+    must_happen: Mapped[str] = mapped_column(String(3000), default="")
+    invalidation: Mapped[str] = mapped_column(String(3000), default="")
+    status: Mapped[str] = mapped_column(String(16), default="active")
+
+
+class AlertRuleRow(Base):
+    __tablename__ = "alert_rules"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    ticker: Mapped[str] = mapped_column(String(12), index=True)
+    min_score: Mapped[float] = mapped_column(Float, default=0)
+    max_score: Mapped[float] = mapped_column(Float, default=100)
+    note: Mapped[str] = mapped_column(String(500), default="")
+
+
+class WatchlistRow(Base):
+    __tablename__ = "watchlist"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    ticker: Mapped[str] = mapped_column(String(12), index=True)
+    stage: Mapped[str] = mapped_column(String(20), default="idea")
+
 Base.metadata.create_all(engine)
 
 
@@ -348,6 +378,89 @@ def monte_carlo(ticker: str, days: int = 252, sims: int = 500):
         "p50": round(float(np.percentile(final, 50)), 2),
         "p95": round(float(np.percentile(final, 95)), 2),
     }
+
+
+
+
+@app.post("/api/thesis")
+def save_thesis(portfolio_id: int, ticker: str, thesis: str, must_happen: str = "", invalidation: str = "", db: Session = Depends(get_db)):
+    row = db.scalar(select(ThesisRow).where(ThesisRow.portfolio_id == portfolio_id, ThesisRow.ticker == ticker.upper()))
+    if row:
+        row.thesis = thesis
+        row.must_happen = must_happen
+        row.invalidation = invalidation
+    else:
+        db.add(ThesisRow(portfolio_id=portfolio_id, ticker=ticker.upper(), thesis=thesis, must_happen=must_happen, invalidation=invalidation))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/stocks/{ticker}/quarterly-translator")
+def quarterly_translator(ticker: str):
+    qa = quarterly_analyzer(ticker)
+    why = []
+    why.append("Revenue trend improved versus prior periods." if qa["growth_pct"] > 0 else "Revenue trend weakened versus prior periods.")
+    why.append("EPS trend improved, supporting profitability outlook." if qa["eps_growth_pct"] > 0 else "EPS trend deteriorated and needs attention.")
+    return {
+        "ticker": ticker.upper(),
+        "label": qa["verdict"],
+        "score": qa["score"],
+        "summary": f"Quarter verdict is {qa['verdict'].upper()} based on trend signals.",
+        "what_went_good": [w for w in why if "improved" in w],
+        "what_went_bad": [w for w in why if "weakened" in w or "deteriorated" in w],
+        "what_to_watch_next": ["Next quarter guidance", "Margin trend", "Cashflow conversion"],
+    }
+
+
+@app.post("/api/watchlist")
+def upsert_watchlist(portfolio_id: int, ticker: str, stage: str = "idea", db: Session = Depends(get_db)):
+    row = db.scalar(select(WatchlistRow).where(WatchlistRow.portfolio_id == portfolio_id, WatchlistRow.ticker == ticker.upper()))
+    if row:
+        row.stage = stage
+    else:
+        db.add(WatchlistRow(portfolio_id=portfolio_id, ticker=ticker.upper(), stage=stage))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/watchlist")
+def get_watchlist(portfolio_id: int, db: Session = Depends(get_db)):
+    rows = db.scalars(select(WatchlistRow).where(WatchlistRow.portfolio_id == portfolio_id)).all()
+    return [{"ticker": r.ticker, "stage": r.stage} for r in rows]
+
+
+@app.post("/api/alerts")
+def create_alert(portfolio_id: int, ticker: str, min_score: float = 0, max_score: float = 100, note: str = "", db: Session = Depends(get_db)):
+    db.add(AlertRuleRow(portfolio_id=portfolio_id, ticker=ticker.upper(), min_score=min_score, max_score=max_score, note=note))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/alerts/check")
+def check_alerts(portfolio_id: int, db: Session = Depends(get_db)):
+    rules = db.scalars(select(AlertRuleRow).where(AlertRuleRow.portfolio_id == portfolio_id)).all()
+    triggered = []
+    for r in rules:
+        score = _compute_stock_score(r.ticker).total
+        if score < r.min_score or score > r.max_score:
+            triggered.append({"ticker": r.ticker, "score": score, "note": r.note})
+    return {"portfolio_id": portfolio_id, "triggered": triggered, "count": len(triggered)}
+
+
+@app.get("/api/portfolio/daily-brief")
+def daily_brief(portfolio_id: int, db: Session = Depends(get_db)):
+    positions = db.scalars(select(PositionRow).where(PositionRow.portfolio_id == portfolio_id)).all()
+    cards = []
+    for row in positions[:10]:
+        score = _compute_stock_score(row.ticker)
+        news = (yf.Ticker(row.ticker).news or [])[:1]
+        cards.append({
+            "ticker": row.ticker,
+            "score": score.total,
+            "signal": "strong" if score.total >= 75 else "watch" if score.total >= 60 else "risk",
+            "headline": (news[0].get("content", {}).get("title") if news else None),
+        })
+    return {"date": datetime.utcnow().strftime("%Y-%m-%d"), "portfolio_id": portfolio_id, "cards": cards}
 
 
 @app.get("/", response_class=HTMLResponse)
