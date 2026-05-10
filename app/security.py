@@ -1,12 +1,12 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
-import os
 import secrets
 
 import jwt
 
-SECRET_KEY = os.getenv("APP_SECRET", "dev-secret-change-me")
+from app.config import ACCESS_TOKEN_MINUTES, APP_SECRET, REFRESH_TOKEN_DAYS
+
 ALGO = "HS256"
 
 
@@ -21,10 +21,16 @@ def verify_password(password: str, digest: str, salt: str) -> bool:
     return hmac.compare_digest(check, digest)
 
 
-def create_access_token(subject: str, minutes: int = 60) -> str:
-    exp = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-    return jwt.encode({"sub": subject, "exp": exp}, SECRET_KEY, algorithm=ALGO)
+def create_access_token(subject: str, role: str) -> str:
+    exp = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_MINUTES)
+    return jwt.encode({"sub": subject, "role": role, "type": "access", "exp": exp}, APP_SECRET, algorithm=ALGO)
+
+
+def create_refresh_token(subject: str) -> str:
+    exp = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_DAYS)
+    jti = secrets.token_hex(16)
+    return jwt.encode({"sub": subject, "type": "refresh", "jti": jti, "exp": exp}, APP_SECRET, algorithm=ALGO)
 
 
 def decode_token(token: str) -> dict:
-    return jwt.decode(token, SECRET_KEY, algorithms=[ALGO])
+    return jwt.decode(token, APP_SECRET, algorithms=[ALGO])

@@ -17,11 +17,11 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, create_engine, func, select, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
-from app.security import create_access_token, decode_token, hash_password, verify_password
+from app.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
+from app.config import DATABASE_URL
 
 app = FastAPI(title="Portfolio Tracker")
 templates = Jinja2Templates(directory="app/templates")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///portfolio.db")
 engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 logger = logging.getLogger("portfolio_tracker")
@@ -114,6 +114,22 @@ class WatchlistRow(Base):
     ticker: Mapped[str] = mapped_column(String(12), index=True)
     stage: Mapped[str] = mapped_column(String(20), default="idea")
 
+
+
+class RefreshTokenRow(Base):
+    __tablename__ = "refresh_tokens"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token_jti: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    revoked: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AuditLogRow(Base):
+    __tablename__ = "audit_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    action: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class PriceSnapshotRow(Base):
@@ -287,8 +303,12 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     default_portfolio = PortfolioRow(user_id=user.id, name="Main")
     db.add(default_portfolio)
     db.commit()
-    token = create_access_token(str(user.id))
-    return {"user_id": user.id, "email": user.email, "default_portfolio_id": default_portfolio.id, "access_token": token}
+    access = create_access_token(str(user.id), user.role)
+    refresh = create_refresh_token(str(user.id))
+    payload = decode_token(refresh)
+    db.add(RefreshTokenRow(user_id=user.id, token_jti=payload["jti"]))
+    db.commit()
+    return {"user_id": user.id, "email": user.email, "default_portfolio_id": default_portfolio.id, "access_token": access, "refresh_token": refresh}
 
 
 @app.post("/api/login")
@@ -296,7 +316,12 @@ def login(email: str, password: str, db: Session = Depends(get_db)):
     user = db.scalar(select(UserRow).where(UserRow.email == email))
     if not user or not verify_password(password, user.password_hash, user.password_salt):
         raise HTTPException(status_code=401, detail="invalid credentials")
-    return {"access_token": create_access_token(str(user.id))}
+    access = create_access_token(str(user.id), user.role)
+    refresh = create_refresh_token(str(user.id))
+    payload = decode_token(refresh)
+    db.add(RefreshTokenRow(user_id=user.id, token_jti=payload["jti"]))
+    db.commit()
+    return {"access_token": access, "refresh_token": refresh}
 
 
 def _require_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> UserRow:
@@ -308,6 +333,45 @@ def _require_user(authorization: str | None = Header(default=None), db: Session 
     if not user:
         raise HTTPException(status_code=401, detail="invalid token")
     return user
+
+
+
+
+def _require_role(required: str):
+    def _inner(user: UserRow = Depends(_require_user)):
+        if user.role != required:
+            raise HTTPException(status_code=403, detail="insufficient role")
+        return user
+    return _inner
+
+
+@app.post("/api/token/refresh")
+def token_refresh(refresh_token: str, db: Session = Depends(get_db)):
+    payload = decode_token(refresh_token)
+    if payload.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="invalid refresh token")
+    row = db.scalar(select(RefreshTokenRow).where(RefreshTokenRow.token_jti == payload.get("jti")))
+    if not row or row.revoked:
+        raise HTTPException(status_code=401, detail="revoked refresh token")
+    user = db.get(UserRow, int(payload["sub"]))
+    return {"access_token": create_access_token(str(user.id), user.role)}
+
+
+@app.post("/api/token/revoke")
+def revoke_token(refresh_token: str, db: Session = Depends(get_db), user: UserRow = Depends(_require_user)):
+    payload = decode_token(refresh_token)
+    row = db.scalar(select(RefreshTokenRow).where(RefreshTokenRow.token_jti == payload.get("jti"), RefreshTokenRow.user_id == user.id))
+    if row:
+        row.revoked = 1
+        db.add(AuditLogRow(user_id=user.id, action="revoke_refresh_token"))
+        db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/admin/audit")
+def audit_logs(db: Session = Depends(get_db), admin: UserRow = Depends(_require_role("admin"))):
+    logs = db.scalars(select(AuditLogRow).order_by(AuditLogRow.id.desc())).all()
+    return [{"user_id": l.user_id, "action": l.action, "created_at": str(l.created_at)} for l in logs[:200]]
 
 
 @app.post("/api/portfolios")

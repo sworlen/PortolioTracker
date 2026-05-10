@@ -1,28 +1,18 @@
-# PortolioTracker
+# PortfolioTracker - Wave 1
 
-Advanced FastAPI investor platform with architecture upgrades toward production.
+Wave 1 delivers production-foundation upgrades:
 
-## Added in this iteration
-
-- Password hashing + JWT auth utilities (`app/security.py`)
-- User registration/login token flow with bearer-token dependency checks
-- Environment-based DB configuration (`DATABASE_URL`)
-- Lightweight in-process caching + rate limiting for quote pulls
-- Operational metrics endpoint (`/api/ops/metrics`)
-- Snapshot job endpoint for historical price storage (`/api/jobs/snapshot-prices`)
-- Additional normalized persistence tables for:
-  - price snapshots
-  - news snapshots
-  - earnings/catalyst events
-  - portfolio NAV ledger
-- Investor workflow features:
-  - thesis tracking
-  - watchlist funnel
-  - score alerts
-  - daily brief
-  - quarterly translator
-- Quant algorithms module: returns, drawdown, Sharpe/Sortino, DCF, Monte Carlo
-- Basic automated tests + GitHub Actions CI scaffold
+- Environment-driven config (`DATABASE_URL`, token lifetimes, secret)
+- JWT access + refresh token flow
+- Refresh token storage + revoke endpoint
+- RBAC guard helper and admin audit endpoint
+- Audit log model for sensitive actions
+- Quote caching + rate limiting
+- Additional normalized data models (price/news snapshots, earnings events, NAV ledger)
+- Scheduler worker stub for periodic price snapshots
+- CI quality gates scaffold (ruff, mypy, bandit, pytest)
+- Security unit tests + analytics unit tests
+- Migration directory scaffold (`migrations/0001_initial.sql`)
 
 ## Run
 
@@ -33,4 +23,5 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-API docs at `http://127.0.0.1:8000/docs`.
+## Notes
+Install dependencies before running tests.
